@@ -1,17 +1,15 @@
-import argparse
-import matplotlib
-import matplotlib.pyplot as plt
 import os
 import time
 import torch
-import torch.nn.functional as F
+import argparse
+import matplotlib
 from torch import optim
-
 from Graph import Graph
-from models import RLActor, RLCritic
+import matplotlib.pyplot as plt
+import torch.nn.functional as F
 from utils import TrafficDataset
+from models import RLActor, RLCritic
 
-# 运行时不显示绘图窗口
 matplotlib.use('Agg')
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -41,14 +39,11 @@ def epoch_process(actor, train_data, init_edge, K):
 
             if actor.training:
                 # if init_choice:
-                """训练时使用概率分布采样"""
-                # 创建以probs为标准的类别分布
+                """sampling by probability distribution"""
                 m = torch.distributions.Categorical(probs)
                 cur_action = m.sample()
-                # 对数概率
                 logp = m.log_prob(cur_action)
             else:
-                """测试时直接使用贪婪策略选最大概率值"""
                 prob, cur_action = torch.max(probs, 1)  # Greedy
                 logp = prob.log()
 
@@ -82,24 +77,24 @@ def epoch_process(actor, train_data, init_edge, K):
 
 def training(actor, critic, result_p, train_data, epoch_max, actor_lr, critic_lr, max_grad_norm, train_size, init_edge,
              K, checkpoint, time_window, **kwargs):
-    # 模型参数保存路径设定
+    # path for saving model
     if checkpoint:
         now = checkpoint
     else:
         now = time.strftime("%Y_%m_%d-%H_%M_%S", time.localtime()) + '-' + str(K) + '-' + str(time_window)
 
     ###############
-    # 结果存储
+    # path for saving results
     save_dir = os.path.join(result_p, now)
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     ###############
 
-    # 训练数据记录
+    # training information
     output_path = os.path.join(save_dir, 'output.txt')
     output_file = open(output_path, 'a+')
 
-    # 模型优化器
+    # optimizer
     actor_optim = optim.Adam(actor.parameters(), lr=actor_lr)
     critic_optim = optim.Adam(critic.parameters(), lr=critic_lr)
 
@@ -108,7 +103,7 @@ def training(actor, critic, result_p, train_data, epoch_max, actor_lr, critic_lr
 
     state = train_data.init_state
 
-    # 训练阶段
+    # training
     for epoch in range(epoch_max):
         actor.train()
         critic.train()
@@ -120,7 +115,7 @@ def training(actor, critic, result_p, train_data, epoch_max, actor_lr, critic_lr
         total_critic_loss = 0.0
 
         for example_id in range(train_size):  # this loop accumulates a batch
-            # 生成一条路径，并得到对应的生成概率
+            # generate one cascading pattern graph and calculate the generating probability
             pattern_graph, pattern_logP = epoch_process(actor, train_data, init_edge, K)
 
             reward = torch.tensor(train_data.evaluate(pattern_graph, 0, 21, time_window)).to(device)
@@ -137,17 +132,16 @@ def training(actor, critic, result_p, train_data, epoch_max, actor_lr, critic_lr
             total_critic_loss = total_critic_loss + per_critic_loss
             total_reward = total_reward + reward
 
-        # 达到生成次数后，计算平均损失和奖励
+        # calculate the average reward and loss
         actor_loss = total_actor_loss / train_size
         critic_loss = total_critic_loss / train_size
         average_reward = total_reward / train_size
 
-        # 记录当前回合的数据
         average_reward_list.append(average_reward.half().item())
         actor_loss_list.append(actor_loss.half().item())
         critic_loss_list.append(critic_loss.half().item())
 
-        # 反向传播，更新参数
+        # update
         actor_optim.zero_grad()
         actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm)
@@ -158,7 +152,7 @@ def training(actor, critic, result_p, train_data, epoch_max, actor_lr, critic_lr
         torch.nn.utils.clip_grad_norm_(critic.parameters(), max_grad_norm)
         critic_optim.step()
 
-        # 计算回合用时，并输出回合信息
+        # output the information of the current episode
         end = time.time()
         cost_time = end - start
         print('epoch %d, average_reward: %2.3f, actor_loss: %2.4f,  critic_loss: %2.4f, cost_time: %2.4fs'
@@ -167,14 +161,12 @@ def training(actor, critic, result_p, train_data, epoch_max, actor_lr, critic_lr
             'epoch %d, average_reward: %2.3f, actor_loss: %2.4f,  critic_loss: %2.4f, cost_time: %2.4fs' % (
                 epoch, average_reward.item(), actor_loss.item(), critic_loss.item(), cost_time) + '\n')
         output_file.flush()
-        # 清空显存
         torch.cuda.empty_cache()  # reduce memory
 
         ########
         # finish an update with a batch
 
         # Save best model parameters
-        # 表现最好的模型参数
         average_reward_value = average_reward.item()
         if average_reward_value > best_reward:
             best_reward = average_reward_value
@@ -187,7 +179,7 @@ def training(actor, critic, result_p, train_data, epoch_max, actor_lr, critic_lr
 
     output_file.close()
 
-    # 损失数据记录
+    # loss
     records_path = os.path.join(save_dir, 'Reward_Aloss_Closs.txt')
     write_file = open(records_path, 'w')
     for i in range(epoch_max):
@@ -201,7 +193,7 @@ def training(actor, critic, result_p, train_data, epoch_max, actor_lr, critic_lr
         write_file.write(to_write)
     write_file.close()
 
-    # 绘制并保存展示图表
+    # plot
     picture_path = os.path.join(save_dir, 'reward.png')
     # plt.subplot(2, 1, 1)
     plt.figure('Figure1')
@@ -240,10 +232,10 @@ def pattern_infer(input_args):
                                 input_args.K,
                                 start_timestamp=42,
                                 end_timestamp=60)
-
+    # Actor
     actor = RLActor(MATE_SIZE, input_args.hidden_size, train_data.relation_Num, input_args.K).to(device)
 
-    # Critic模型定义
+    # Critic
     critic = RLCritic(MATE_SIZE, args.hidden_size, input_args.K).to(device)
 
     kwargs = vars(args)  # dict
@@ -255,7 +247,6 @@ def pattern_infer(input_args):
         training(actor, critic, result_p, **kwargs)
     else:
         if args.checkpoint:  # test: give model_solution
-            # 若已经有了参数存档，则直接使用该参数得到当前状态的解决方案，并将结果存储在tour_idx.txt文件中
             actor_path = os.path.join(result_p + args.checkpoint, 'actor.pt')
             actor.load_state_dict(torch.load(actor_path, device))
 
@@ -303,11 +294,11 @@ if __name__ == '__main__':
     parser.add_argument('--region', default='lianhu', type=str)
 
     parser.add_argument('--hidden', dest='hidden_size', default=32, type=int)
-    # 用于控制梯度膨胀，如果梯度向量的L2模超过max_grad_norm，则等比例缩小
+
     parser.add_argument('--max_grad_norm', default=2., type=float)
-    # actor模块学习率
+    # learning rate of the actor model
     parser.add_argument('--actor_lr', default=5e-5, type=float)
-    # critic模块学习率
+    # learning rate of the critic model
     parser.add_argument('--critic_lr', default=5e-5, type=float)
     # similar to batch size
     parser.add_argument('--train_size', default=64, type=int)
@@ -322,8 +313,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    # regions = ['yanta', 'beilin', 'lianhu']
-    # for region in regions:
-    #     args.region = region
-    #     pattern_infer(args)
-    pattern_infer(args)
+    regions = ['yanta', 'beilin', 'lianhu']
+    for region in regions:
+        args.region = region
+        pattern_infer(args)
+#     pattern_infer(args)
